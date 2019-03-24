@@ -1,0 +1,4 @@
+*.exe
+.idea/
+*.pyc
+*.au3
