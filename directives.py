@@ -1,6 +1,7 @@
 import strparse
 import lineparse
 import expressions
+import expnodes
 
 NO_MATCH = False, None, -1
 
@@ -11,14 +12,14 @@ class BaseDirective(object):
 
     @classmethod
     def try_parse(cls, raw_lines, current_line):
-        if not cls.is_match(raw_lines[current_line]):
+        if not cls._is_match(raw_lines[current_line]):
             return False, None, -1
 
         instance, current_line = cls.parse(raw_lines, current_line)
         return True, instance, current_line
 
     @classmethod
-    def is_match(cls, raw_line):
+    def _is_match(cls, raw_line):
         if not raw_line.content:
             return False
 
@@ -184,11 +185,11 @@ class EmptyLine(object):
         return ''
 
     @classmethod
-    def is_match(cls, line):
+    def _is_match(cls, line):
         return not line.content
 
     @classmethod
-    def parse(cls, raw_lines, current_line):
+    def parse(cls, _, current_line):
         return EmptyLine(), current_line + 1
 
 
@@ -205,17 +206,48 @@ class VariableDeclaration(object):
         self.is_const = is_const
         self.variables = dict(variables)
 
+    def __repr__(self):
+        return "VariableDecleration(scope_type={}, is_const={}, variables={})".format(
+            repr(self.scope_type),
+            repr(self.is_const),
+            repr(self.variables)
+        )
+
+    def __str__(self):
+        line = self.scope_type + ' '
+
+        if self.is_const:
+            line += 'Const '
+
+        line += ', '.join(['{} = {}'.format(key, value) for key, value in self.variables.iteritems()])
+        return line
+
     @classmethod
-    def try_parse(cls, line):
-        parts = line.content.split()
+    def try_parse(cls, raw_lines, current_line):
+        # {scope} {name} at least!
+        line_content = raw_lines[current_line].content
+        parts = line_content.split(' ', 1)
 
         if len(parts) < 2:
             return NO_MATCH
 
-        scope_type, is_const = cls.get_declaration_properties(parts)
+        scope_type, is_const, assignments = cls.get_declaration_properties(parts)
 
         if scope_type is None:
             return NO_MATCH
+
+        variables = {}
+
+        while assignments:
+            var_name, var_node, var_end = cls.parse_first_assignment(assignments)
+            variables[var_name] = var_node
+            assignments = assignments[var_end:]
+
+        node = VariableDeclaration(scope_type=scope_type,
+                                   is_const=is_const,
+                                   variables=variables)
+
+        return node, len(line_content)
 
     @classmethod
     def parse_first_assignment(cls, assignment):
@@ -232,7 +264,22 @@ class VariableDeclaration(object):
                 variable=variable_name
             ))
 
-        expressions.parse_expression(assignment)
+        # Initialized with an expression
+        if c == '=':
+            # Parse the expression
+            if len(assignment) == c_index:
+                raise SyntaxError("Empty Assignment Value")
+
+            exp_str = assignment[c_index+1:]
+            exp_tree, exp_end = expressions.parse_expression(exp_str,
+                                                             end_options=(',',),
+                                                             allow_more=True)
+            variable_value = exp_tree
+        else:
+            variable_value = expnodes.ValueNode(value='')
+            exp_end = len(assignment)
+
+        return variable_name, variable_value, c_index+1+exp_end+1
 
     @classmethod
     def get_declaration_properties(cls, parts):
@@ -253,12 +300,20 @@ class VariableDeclaration(object):
             scope_type = VariableDeclaration.Global
 
         else:
-            return None, None
+            return None, None, None
 
-        if parts[1] == VariableDeclaration.Const:
+        if not is_const and parts[1].startswith(VariableDeclaration.Const + ' '):
             is_const = True
+            assignments = parts[1].split(' ', 1)
 
-        return scope_type, is_const
+            if len(assignments) < 2:
+                raise SyntaxError("Missing assignments: " + ' '.join(parts))
+
+            assignments = assignments[1]
+        else:
+            assignments = parts[1]
+
+        return scope_type, is_const, assignments
 
 
 def get_directives():
@@ -268,22 +323,19 @@ def get_directives():
         OnAutoItStartRegisterDirective,
         CommentsSectionDirective,
         DirectiveFlag,
+        VariableDeclaration,
         EmptyLine
     )
 
 
-def get_match(raw_line):
-    for directive in get_directives():
-        if directive.is_match(raw_line):
-            return directive
-
-
 def parse(raw_lines, current_line):
-    match_directive = get_match(raw_lines[current_line])
 
-    if match_directive is None:
-        raise Exception("No matching directive for {line}".format(
-            line=str(raw_lines[current_line])
-        ))
+    for directive in get_directives():
+        val = directive.try_parse(raw_lines, current_line)
 
-    return match_directive.parse(raw_lines, current_line)
+        if val != NO_MATCH:
+            return val
+
+    raise Exception("No matching directive for {line}".format(
+        line=str(raw_lines[current_line])
+    ))

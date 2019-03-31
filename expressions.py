@@ -1,69 +1,26 @@
 import lineparse
 import string
-
-
-class ExpressionTree(object):
-    def __init__(self, root_node):
-        self.root_node = root_node
-
-
-class ExpressionNode(object):
-    pass
-
-
-class BinaryOperatorNode(ExpressionNode):
-    def __init__(self, operator, a=None, b=None):
-        self.operator = operator
-        self.a = a
-        self.b = b
-
-    def __str__(self):
-        return "{a} {operator} {b}".format(
-            a=self.a,
-            operator=self.operator,
-            b=self.b
-        )
-
-
-class FunctionCallNode(ExpressionNode):
-    def __init__(self, function_name, arguments):
-        self.function_name = function_name
-        self.arguments = arguments
-
-
-class VariableNode(ExpressionNode):
-    def __init__(self, name):
-        self.name = name
-
-
-class ValueNode(ExpressionNode):
-    def __init__(self, value):
-        self.value = value
-
-
-class ArrayNode(ExpressionNode):
-    def __init__(self, items):
-        self.items = items
-
+import itertools
+import expnodes
 
 operators_by_precedence =\
     (
-        ('^',),
-        ('*', '/'),
-        ('+', '-'),
+        ('And', 'Or'),
+        ('<=', '>=', '<>', '==', '<', '>', '='),
         ('&',),
-        ('<', '>', '<=', '>=', '=', '<>', '=='),
-        ('And', 'Or')
+        ('+', '-'),
+        ('*', '/'),
+        ('^',)
     )
 
 needs_space = ('And', 'Or', 'Not')
 
-all_operators = tuple(op for op_list in operators_by_precedence for op in operators_by_precedence)
+all_operators = list(itertools.chain(*operators_by_precedence))
 
 
 def get_precedence_level(operator):
     index, _ = lineparse.find_first(lambda ops: operator in ops, operators_by_precedence)
-    return len(operators_by_precedence) - index
+    return index
 
 
 OPEN_PARENTHESIS = '('
@@ -73,74 +30,138 @@ OPEN_BRACKETS = '['
 CLOSE_BRACKETS = ']'
 
 
-def parse_expression(exp, end_char=''):
-    exp = exp.strip()
+def strip_spaces(exp):
+    i = 0
 
-    node, node_end_index = get_first_node(exp)
-
-    exp = exp[node_end_index:]
-    op1, op1_end_index = get_operator(exp)
-
-    if op1_end_index == -1:
-        return node
-
-    exp = exp[op1_end_index:]
-    op1 = BinaryOperatorNode(op1, a=node)
-
-    while True:
-        node, node_end_index = get_first_node(exp)
-        exp = exp[op1_end_index:]
-        op2, op2_end_index = get_operator(exp)
-
-        if op2_end_index == -1:
-            op1.b = node
-            return op1,
-        op2 = BinaryOperatorNode(op2)
-
-        if get_precedence_level(op1.operator) > get_precedence_level(op2.operator):
-            op1.b = node
-            op2.a = op1
-            op1 = op2
-            op1_end_index = op2_end_index
+    for c in exp:
+        if not (c == ' ' or c == '\t'):
+            break
         else:
-            right_node, right_node_end = parse_expression(exp)
+            i += 1
 
-            if right_node_end == -1:
-                raise SyntaxError("Missing operands for operator: {0}".format(op2.operator))
+    return exp[i:], i
 
-            op2.a, op2.b = node, right_node
-            op1.b = op2
+
+def read_values(exp, end_options=(), allow_more=False):
+    if not exp:
+        raise SyntaxError("Empty expression")
+
+    end_options = list(end_options)
+    is_error = True
+    end_index = 0
+
+    while exp and exp[0] not in end_options:
+        exp, space_num = strip_spaces(exp)
+        end_index += space_num
+
+        node, node_end_index = get_first_node(exp)
+
+        if node_end_index == -1:
             break
 
-        if op1_end_index >= len(exp) or exp[0] == end_char:
+        is_error = False
+        yield node
+        end_index += node_end_index
+
+        exp = exp[node_end_index:]
+
+        exp, space_num = strip_spaces(exp)
+        end_index += space_num
+
+        op, op_end_index = get_operator(exp)
+
+        if op_end_index == -1:
             break
 
-    if exp != end_char:
-        raise SyntaxError("Expressions needs to end with '{0}': Left Chars - '{1}'".format(
-            end_char, exp
-        ))
+        is_error = True
+        exp = exp[op_end_index:]
+        op = expnodes.BinaryOperatorNode(operator=op)
+        end_index += op_end_index
 
-    return op1, end_index
+        yield op
+
+    exp, spaces_cnt = strip_spaces(exp)
+
+    if not allow_more and end_options and (not exp or exp[0] not in end_options):
+        raise SyntaxError("End character ({}) not met: {}".format(end_options, exp))
+
+    if not allow_more and not end_options and exp:
+        raise SyntaxError("Left chars in the expression: " + repr(exp))
+
+    if is_error:
+        raise SyntaxError("Missing operand:" + exp)
+
+    yield end_index+spaces_cnt
+
+
+def parse_expression(exp, end_options=(), allow_more=False):
+    values = iter(list(read_values(exp, end_options, allow_more)))
+
+    node = next(values)
+    new_op = next(values)
+
+    if isinstance(new_op, int):
+        return node, new_op
+
+    # Build first operator node
+    new_op.a = node
+    new_op.b = next(values)
+    node = new_op
+    new_op = next(values)
+
+    # While has a next node
+    while not isinstance(new_op, int):
+        op_ptr = node
+
+        # Get the correct level of the node
+        while isinstance(op_ptr.b, expnodes.BinaryOperatorNode) and new_op.level > op_ptr.b.level:
+            op_ptr = op_ptr.b
+
+        # If it is lower
+        if new_op.level > op_ptr.level:
+            # Insert the operator lower
+            new_op.a = op_ptr.b
+            op_ptr.b = new_op
+            new_op.b = next(values)
+        else:
+            # If it is higher
+            # Make the new operator the root operator
+            new_op.a = node
+            new_op.b = next(values)
+            node = new_op
+
+        new_op = next(values)
+
+    return node, new_op
 
 
 def get_operator(exp):
-    op_index, op = lineparse.find_first(lambda op: exp.startswith(op), all_operators)
+    op_index, op = lineparse.find_first(lambda cur_op: exp.startswith(cur_op), all_operators)
 
     if op_index == -1:
         return None, op_index
 
-    if op in needs_space and exp[:len(op)] == ' ':
+    if op in needs_space and exp[len(op):len(op)+1] != ' ':
         raise SyntaxError("Operator {} needs space", op)
 
     return op, len(op)
 
 
 def get_first_node(exp):
+    exp, end_of_spaces = strip_spaces(exp)
+    exp_node, end_index = get_first_node_without_spaces(exp)
+    return exp_node, end_index + end_of_spaces
+
+
+def get_first_node_without_spaces(exp):
     """
     Get the first node in an expression string
     :param exp: The expression string
     :return: (ExpressionNode node_object, int end_index)
     """
+
+    if not exp:
+        raise SyntaxError("Empty node")
 
     if exp[0] == OPEN_PARENTHESIS:
         return get_parenthesis_exp(exp)
@@ -152,16 +173,16 @@ def get_first_node(exp):
         return get_number(exp[2:], base=16)
 
     if exp[0] in ['@', '$']:
-        var_end_index = get_name_end(exp[1:])
+        var_end_index = get_name_end(exp[1:]) + 1
         var_name = exp[:var_end_index]
 
         # Variable containing a function
-        if exp[var_end_index] == OPEN_PARENTHESIS:
-            return get_function_call(var_name, exp)
+        if len(exp) > var_end_index and exp[var_end_index] == OPEN_PARENTHESIS:
+            return get_function_call(var_name, exp[var_end_index:])
 
         # Normal variable usage
         else:
-            return VariableNode(name=var_name), var_end_index
+            return expnodes.VariableNode(name=var_name), var_end_index
 
     if exp[0] in ['"', "'"]:
         return get_string(exp)
@@ -172,18 +193,43 @@ def get_first_node(exp):
     name_end = get_name_end(exp)
     name = exp[:name_end]
 
-    if name in ['False', 'True']:
-        return ValueNode(bool(name)), name_end
+    if name == 'True':
+        return expnodes.ValueNode(True), name_end
 
-    if exp[:name_end] == OPEN_PARENTHESIS:
+    if name == 'False':
+        return expnodes.ValueNode(False), name_end
+
+    if name == 'Not':
+        return get_not_node(exp, name_end)
+
+    if len(exp) > name_end and exp[name_end] == OPEN_PARENTHESIS:
         return get_function_call(name, exp[name_end:])
+
+    if len(name) > 0:
+        return expnodes.FunctionReferenceNode(function_name=name), name_end
 
     raise SyntaxError('Error parsing value from {0}'.format(exp))
 
 
+def get_not_node(exp, name_end):
+    node, node_end = get_first_node(exp[name_end:])
+    return expnodes.NotNode(value=node), node_end+name_end
+
+
 def get_array(exp):
     items, end_index = parse_node_list(exp, end_char=CLOSE_BRACKETS)
-    return ArrayNode(items), end_index
+    return expnodes.ArrayNode(items), end_index+1
+
+
+def escape_string(unescaped_string, enclosing="'"):
+    escaped_string = enclosing
+
+    for char in unescaped_string:
+        if char == enclosing:
+            escaped_string += enclosing
+        escaped_string += char
+    escaped_string += enclosing
+    return escaped_string
 
 
 def get_string(exp):
@@ -205,15 +251,15 @@ def get_string(exp):
         output_string += exp[current_index]
         current_index += 1
 
-    return ValueNode(output_string), current_index
+    return expnodes.ValueNode(output_string), current_index+1
 
 
 def get_function_call(func_name, exp):
     arguments, end_index = parse_node_list(exp, end_char=CLOSE_PARENTHESIS)
-    return FunctionCallNode(
+    return expnodes.FunctionCallNode(
         function_name=func_name,
         arguments=arguments
-    ), end_index
+    ), end_index+len(func_name)+1
 
 
 def parse_node_list(exp, end_char):
@@ -232,9 +278,14 @@ def parse_node_list(exp, end_char):
 
     if exp[current_index] != end_char:
         while True:
-            argument_node, argument_end = parse_expression(exp[current_index:])
+            argument_node, argument_end = parse_expression(exp[current_index:],
+                                                           end_options=(',', CLOSE_PARENTHESIS),
+                                                           allow_more=True)
             arguments.append(argument_node)
             current_index += argument_end
+
+            if current_index >= len(exp):
+                raise SyntaxError("Missing Node List End: " + exp)
 
             if exp[current_index] == end_char:
                 break
@@ -242,29 +293,14 @@ def parse_node_list(exp, end_char):
             if exp[current_index] != ',':
                 raise SyntaxError("Missing ',' between items")
 
+            current_index += 1
+
     return arguments, current_index
 
 
-def get_closing_parenthesis(exp):
-    cnt = 0
-
-    for index, char in enumerate(exp):
-        if char == OPEN_PARENTHESIS:
-            cnt += 1
-
-        elif char == CLOSE_PARENTHESIS:
-            cnt -= 1
-
-            if cnt == 0:
-                return index
-
-    raise SyntaxError("Could not find closing parenthesis for expression: {0}".format(exp))
-
-
 def get_parenthesis_exp(exp):
-    end_index = get_closing_parenthesis(exp)
-
-    return parse_expression(exp[1:end_index]), end_index+1
+    node, end_index = parse_expression(exp[1:], end_options=(CLOSE_PARENTHESIS,))
+    return node, end_index+2
 
 
 def get_number(exp, base=10):
@@ -281,7 +317,7 @@ def get_number(exp, base=10):
     else:
         number_value = int(number_value, base)
 
-    return ValueNode(value=number_value), end_index
+    return expnodes.ValueNode(value=number_value), end_index
 
 
 def get_number_end(exp):
@@ -298,9 +334,10 @@ def get_number_end(exp):
             dot_index = char_index
 
         elif not char.isdigit():
-            return char_index, dot_index
+            char_index -= 1
+            break
 
-    return char_index, dot_index
+    return char_index+1, dot_index
 
 
 name_chars = string.letters + string.digits + '_'
@@ -320,4 +357,3 @@ def get_name_end(exp):
         char_index = len(exp)
 
     return char_index
-
