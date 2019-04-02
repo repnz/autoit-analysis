@@ -2,8 +2,9 @@ import strparse
 import lineparse
 import expressions
 import expnodes
+import blocks
 
-NO_MATCH = False, None, -1
+NO_MATCH = None, -1
 
 
 class BaseDirective(object):
@@ -13,10 +14,10 @@ class BaseDirective(object):
     @classmethod
     def try_parse(cls, raw_lines, current_line):
         if not cls._is_match(raw_lines[current_line]):
-            return False, None, -1
+            return None, -1
 
         instance, current_line = cls.parse(raw_lines, current_line)
-        return True, instance, current_line
+        return instance, current_line
 
     @classmethod
     def _is_match(cls, raw_line):
@@ -180,7 +181,7 @@ class DirectiveFlag(BaseDirective):
         return DirectiveFlag(flag_name), current_line + 1
 
 
-class EmptyLine(object):
+class EmptyLine(BaseDirective):
     def __str__(self):
         return ''
 
@@ -247,7 +248,7 @@ class VariableDeclaration(object):
                                    is_const=is_const,
                                    variables=variables)
 
-        return node, len(line_content)
+        return node, current_line+1
 
     @classmethod
     def parse_first_assignment(cls, assignment):
@@ -316,6 +317,112 @@ class VariableDeclaration(object):
         return scope_type, is_const, assignments
 
 
+class ConditionBlock(object):
+    def __init__(self, exp, block):
+        self.exp = exp
+        self.block = block
+
+
+class IfStatement(BaseDirective):
+    if_exp = strparse.compile('If {exp} Then')
+    elseif_exp = strparse.compile('ElseIf {exp} Then')
+
+    def __init__(self, condition_blocks, else_block):
+        self.condition_blocks = condition_blocks
+        self.else_block = else_block
+
+    def __str__(self):
+        x = str(self.condition_blocks[0].exp)
+        s = 'If {exp} Then\n'.format(exp=str(self.condition_blocks[0].exp))
+        s += str(self.condition_blocks[0].block) + '\n'
+
+        for else_if in self.condition_blocks[1:]:
+            s += 'ElseIf {exp} Then\n'.format(exp=str(else_if.exp))
+            s += str(else_if.block) + '\n'
+
+        if self.else_block is not None:
+            s += 'Else\n' + str(self.else_block) + '\n'
+
+        s += 'EndIf'
+        return s
+
+    @classmethod
+    def try_parse(cls, raw_lines, current_line):
+        line = raw_lines[current_line].content
+
+        if not line.startswith('If '):
+            return NO_MATCH
+
+        exp_result = IfStatement.if_exp.parse(line)
+
+        if exp_result is None:
+            raise SyntaxError("Cannot parse If line: {}".format(line))
+
+        if_expression = exp_result['exp']
+
+        condition_blocks = []
+
+        if_expression_node, _ = expressions.parse_expression(if_expression)
+        block, current_line = blocks.parse_lines(raw_lines, current_line+1,
+                                                 end_condition=cls.__end_condition)
+
+        condition_blocks.append(ConditionBlock(exp=if_expression_node, block=block))
+
+        else_if_blocks, current_line = cls.__parse_else_if_blocks(raw_lines, current_line)
+
+        condition_blocks += else_if_blocks
+
+        if raw_lines[current_line].content == 'Else':
+            else_block, current_line = blocks.parse_lines(raw_lines,
+                                                          current_line+1,
+                                                          end_condition=lambda x: x == 'EndIf')
+        else:
+            else_block = None
+
+        return IfStatement(
+            condition_blocks=condition_blocks,
+            else_block=else_block
+        ), current_line+1
+
+    @classmethod
+    def __parse_else_if_blocks(cls, raw_lines, current_line):
+        condition_blocks = []
+
+        while current_line < len(raw_lines) and \
+                raw_lines[current_line].content.startswith('ElseIf '):
+
+            else_if_expression = IfStatement.elseif_exp.parse(raw_lines[current_line].content)
+
+            if else_if_expression is None:
+                raise SyntaxError("Could not parse ElseIf Expression: " + str(raw_lines[current_line]))
+
+            else_if_expression_node, _ = expressions.parse_expression(else_if_expression['exp'])
+
+            else_if_block, current_line = blocks.parse_lines(
+                raw_lines,
+                current_line + 1,
+                end_condition=cls.__end_condition
+            )
+
+            condition_blocks.append(ConditionBlock(exp=else_if_expression_node,
+                                                   block=else_if_block))
+
+        return condition_blocks, current_line
+
+    @classmethod
+    def __end_condition(cls, line_content):
+        if line_content == 'Else':
+            return True
+
+        if line_content == 'EndIf':
+            return True
+
+        if line_content.startswith('ElseIf '):
+            return True
+
+        return False
+
+
 def get_directives():
     return (
         PragmaDirective,
@@ -324,6 +431,7 @@ def get_directives():
         CommentsSectionDirective,
         DirectiveFlag,
         VariableDeclaration,
+        IfStatement,
         EmptyLine
     )
 

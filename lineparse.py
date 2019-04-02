@@ -5,6 +5,9 @@ class ProcessedLine(object):
         self.comment = comment
 
     def __str__(self):
+        return str(self.statement) + '' if not self.comment else '; ' + self.comment
+
+    def __repr__(self):
         return 'Processed Line {number}: {code} {comment}'.format(
             number=self.number,
             code=str(self.statement),
