@@ -357,3 +357,18 @@ def get_name_end(exp):
         char_index = len(exp)
 
     return char_index
+
+
+def validate_symbol_name(name):
+    if not name:
+        raise SyntaxError("Empty symbol name")
+
+    if name[0] not in name_first_letter:
+        raise SyntaxError("First letter is invalid: {}".format(name[0]))
+
+    if not all(c in name_chars for c in name):
+        raise SyntaxError("Invalid chars in symbol name: " + name)
+
+
+def validate_variable_name(name):
+    return name.startswith('$') and validate_symbol_name(name[1:])

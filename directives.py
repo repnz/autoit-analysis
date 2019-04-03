@@ -208,7 +208,7 @@ class VariableDeclaration(object):
         self.variables = dict(variables)
 
     def __repr__(self):
-        return "VariableDecleration(scope_type={}, is_const={}, variables={})".format(
+        return "VariableDeclaration(scope_type={}, is_const={}, variables={})".format(
             repr(self.scope_type),
             repr(self.is_const),
             repr(self.variables)
@@ -423,6 +423,54 @@ class IfStatement(BaseDirective):
         return False
 
 
+class FunctionDeclaration(BaseDirective):
+    exp = strparse.compile('Func {func_name}({args})')
+
+    def __init__(self, func_name, args, func_block):
+        self.func_name = func_name
+        self.args = args
+        self.func_block = func_block
+
+    def __str__(self):
+        return 'Func {name}({args})\n{block}\nEndFunc'.format(
+            name=self.func_name,
+            args=', '.join(self.args),
+            block=str(self.func_block)
+        )
+
+    def __repr__(self):
+        return '{}(func_name={}, args={}, func_block={})'.format(
+            FunctionDeclaration.__name__,
+            repr(self.func_name),
+            repr(self.args),
+            repr(self.func_name)
+        )
+
+    @classmethod
+    def try_parse(cls, raw_lines, current_line):
+        content = raw_lines[current_line].content
+
+        if not content.startswith('Func '):
+            return NO_MATCH
+
+        exp_result = FunctionDeclaration.exp.parse(content)
+        func_name = exp_result['func_name'].strip()
+        expressions.validate_symbol_name(func_name)
+        args = exp_result['args'].strip()
+        args = map(str.strip, args.split(','))
+
+        for arg in args:
+            expressions.validate_variable_name(arg)
+
+        func_block, end_line = blocks.parse_lines(
+            raw_lines,
+            current_line+1,
+            end_condition=lambda line: line == 'EndFunc'
+        )
+
+        return FunctionDeclaration(func_name, args, func_block), end_line+1
+
+
 def get_directives():
     return (
         PragmaDirective,
@@ -432,6 +480,7 @@ def get_directives():
         DirectiveFlag,
         VariableDeclaration,
         IfStatement,
+        FunctionDeclaration,
         EmptyLine
     )
 
