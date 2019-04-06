@@ -471,6 +471,31 @@ class FunctionDeclaration(BaseDirective):
         return FunctionDeclaration(func_name, args, func_block), end_line+1
 
 
+class WhileStatement(BaseDirective):
+    def __init__(self, condition, block):
+        self.condition = condition
+        self.block = block
+
+    @classmethod
+    def try_parse(cls, raw_lines, current_line):
+        while_line = raw_lines[current_line].content
+
+        if not while_line.startswith('While'):
+            return NO_MATCH
+
+        while_condition = while_line[5:]
+
+        if not (while_condition[0] == '(' or while_condition[0] == ' '):
+            return NO_MATCH
+
+        while_condition, _ = expressions.parse_expression(while_condition)
+        block, end_line = blocks.parse_lines(raw_lines, current_line+1, end_condition=lambda line: line == 'WEnd')
+        return WhileStatement(while_condition, block), end_line+1
+
+    def __str__(self):
+        return "While {}\n{}\nWEnd".format(self.condition, self.block)
+
+
 def get_directives():
     return (
         PragmaDirective,
@@ -481,6 +506,7 @@ def get_directives():
         VariableDeclaration,
         IfStatement,
         FunctionDeclaration,
+        WhileStatement,
         EmptyLine
     )
 
